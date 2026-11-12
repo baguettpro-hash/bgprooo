@@ -162,7 +162,11 @@ async function loadBundledBackup(){
     return true;
   }catch(err){ console.warn('Bundled backup unavailable:',err); return false; }
 }
+let remoteLoadInFlight=false;
 async function loadFromSupabase(){
+  if(remoteLoadInFlight) return;
+  remoteLoadInFlight=true;
+  try{
   /* Read each table separately. A failure in offers must never prevent
      customers from receiving the products table. */
   let productsLoaded=false, offersLoaded=false;
@@ -171,7 +175,16 @@ async function loadFromSupabase(){
   try{
     const rp=await sbRequest(SUPABASE_PRODUCTS_TABLE+'?select=*&order=name.asc');
     if(Array.isArray(rp) && rp.length>0){
-       products=rp.map(fromRemoteProduct);
+       const normalizeKey=(x)=>String(x||'').trim().toLowerCase().replace(/\s+/g,' ');
+       const uniqueProducts=new Map();
+       for(const row of rp){
+         const key=normalizeKey(row.category)+'|'+normalizeKey(row.name);
+         const score=(row.image_url?4:0)+(row.desc?2:0)+(row.emoji?1:0);
+         const previous=uniqueProducts.get(key);
+         const previousScore=previous ? ((previous.image_url?4:0)+(previous.desc?2:0)+(previous.emoji?1:0)) : -1;
+         if(!previous || score>=previousScore) uniqueProducts.set(key,row);
+       }
+       products=Array.from(uniqueProducts.values()).map(fromRemoteProduct);
        localStorage.setItem('bp_products_v2',JSON.stringify(products));
        localStorage.setItem('bp_products',JSON.stringify(products));
        productsLoaded=true;
@@ -188,7 +201,16 @@ async function loadFromSupabase(){
   try{
     const ro=await sbRequest(SUPABASE_OFFERS_TABLE+'?select=*&order=name.asc');
     if(Array.isArray(ro)){
-      dailyOffers=ro.map(fromRemoteOffer);
+      const normalizeOffer=(x)=>String(x||'').trim().toLowerCase().replace(/\s+/g,' ');
+      const uniqueOffers=new Map();
+      for(const row of ro){
+        const key=normalizeOffer(row.name);
+        const score=(row.image_url?4:0)+(row.desc?2:0);
+        const previous=uniqueOffers.get(key);
+        const previousScore=previous ? ((previous.image_url?4:0)+(previous.desc?2:0)) : -1;
+        if(!previous || score>=previousScore) uniqueOffers.set(key,row);
+      }
+      dailyOffers=Array.from(uniqueOffers.values()).map(fromRemoteOffer);
       localStorage.setItem('bp_offers_v2',JSON.stringify(dailyOffers));
       localStorage.setItem('bp_offers',JSON.stringify(dailyOffers));
       offersLoaded=true;
@@ -208,6 +230,9 @@ async function loadFromSupabase(){
     }
   }
   console.log('Baguette Pro remote load:',{productsLoaded,offersLoaded,errors});
+  }finally{
+    remoteLoadInFlight=false;
+  }
 }
 const originalProducts=[
 {name:'Smash Burger',category:'Burgers',price:7,emoji:'🍔',desc:'Smash-style beef burger with fries.'},
@@ -361,10 +386,10 @@ async function initMenu(){
   await loadFromSupabase();
 }
 window.addEventListener('pageshow',function(e){
-  if(e.persisted){ loadFromSupabase(); }
+  if(e.persisted){ setTimeout(loadFromSupabase,100); }
 });
 document.addEventListener('visibilitychange',function(){
-  if(!document.hidden){ setTimeout(loadFromSupabase,250); }
+  if(!document.hidden){ setTimeout(loadFromSupabase,500); }
 });
 initMenu();
 </script>
